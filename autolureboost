@@ -1,0 +1,236 @@
+Local worldname = "worldname"
+local BATCH_SIZE = 5
+
+local PACK_ID = "LureBooster"
+local PACK_COST = 100
+
+local PIXELSTATION = "PIXELSTATION"
+local WORLD = worldname:upper()
+
+local manager = getClient()
+local managerId = manager.id
+
+local function rsleep(a, b)
+    sleep(math.random(a, b))
+end
+
+local function log(msg)
+    print("[BATCH] " .. tostring(msg))
+end
+
+local function isBad(bot)
+    local s = bot.status
+    return s == 7 or
+           s == "rateLimited" or
+           s == "ipBanned" or
+           s == "deviceBanned" or
+           s == "accountBanned" or
+           s == "authError" or
+           s == "kicked" or
+           s == "jwtError"
+end
+
+local function nav(bot)
+    local ok, n = pcall(function()
+        return bot:navigation()
+    end)
+
+    if not ok or n == nil then return "" end
+    return tostring(n):upper()
+end
+
+local function safeRemove(bot)
+    if not bot then return end
+
+    log(bot.id .. " remove client")
+
+    pcall(function()
+        bot:disconnect()
+    end)
+
+    sleep(300)
+
+    pcall(function()
+        removeClient(bot.id)
+    end)
+
+    sleep(300)
+end
+
+local function dropLures(bot)
+    local ok, inv = pcall(function()
+        return bot:inventory()
+    end)
+
+    if not ok or not inv or not inv.items then return end
+
+    for _, item in pairs(inv.items) do
+        if item and item.type == 7 and item.amount and item.amount > 0 then
+            log(bot.id .. " drop lure id=" .. item.id .. " amount=" .. item.amount)
+
+            pcall(function()
+                bot:drop(item.id, item.type, item.amount)
+            end)
+
+            rsleep(250, 600)
+        end
+    end
+end
+
+local function waitNav(bot, target, timeoutSec)
+    local t = 0
+    target = target:upper()
+
+    while nav(bot) ~= target and t < timeoutSec do
+        if bot.status == 3 then return false end
+        if isBad(bot) then return false end
+
+        sleep(1000)
+        t = t + 1
+    end
+
+    return nav(bot) == target
+end
+
+local function processWorker(bot)
+    log(bot.id .. " start")
+
+    if bot.status == 3 or bot.status == 7 then
+        log(bot.id .. " skip status=" .. tostring(bot.status))
+        return
+    end
+
+    if not waitNav(bot, PIXELSTATION, 120) then
+        log(bot.id .. " failed wait PIXELSTATION status=" .. tostring(bot.status))
+        return
+    end
+
+    if bot.status == 3 or isBad(bot) then return end
+
+    rsleep(800, 1500)
+
+    pcall(function()
+        bot:warp(worldname)
+    end)
+
+    rsleep(3500, 5500)
+
+    if not waitNav(bot, WORLD, 60) then
+        log(bot.id .. " failed warp world nav=" .. nav(bot))
+        return
+    end
+
+    rsleep(800, 1500)
+
+    while bot.gems and bot.gems >= PACK_COST do
+        if bot.status == 3 then
+            log(bot.id .. " Already On [0]")
+            return
+        end
+
+        if isBad(bot) then
+            log(bot.id .. " bad status: " .. tostring(bot.status))
+            return
+        end
+
+        local before = bot.gems
+
+        log(bot.id .. " buy " .. PACK_ID .. " gems=" .. before)
+
+        pcall(function()
+            bot:buy(PACK_ID)
+        end)
+
+        local waited = 0
+
+        while bot.gems >= before and waited < 20 do
+            if bot.status == 3 then return end
+            if isBad(bot) then return end
+
+            sleep(500)
+            waited = waited + 1
+        end
+
+        if bot.gems >= before then
+            log(bot.id .. " buy failed/no gem change")
+            break
+        end
+
+        rsleep(300, 800)
+        dropLures(bot)
+        rsleep(300, 800)
+    end
+
+    dropLures(bot)
+    log(bot.id .. " done")
+end
+
+local function snapshotClients()
+    local old = {}
+
+    for _, c in pairs(getClients()) do
+        old[c.id] = true
+    end
+
+    return old
+end
+
+local function getNewWorkers(old)
+    local workers = {}
+
+    for _, c in pairs(getClients()) do
+        if c.id ~= managerId and not old[c.id] then
+            table.insert(workers, c)
+        end
+    end
+
+    return workers
+end
+
+runThread(function()
+    log("manager=" .. managerId)
+
+    while true do
+        log("new batch")
+
+        local old = snapshotClients()
+
+        for i = 1, BATCH_SIZE do
+            pcall(function()
+                addClient()
+            end)
+
+            sleep(500)
+        end
+
+        sleep(2500)
+
+        local workers = getNewWorkers(old)
+
+        for _, bot in pairs(workers) do
+            runThread(function()
+                if bot.status == 3 or bot.status == 7 or isBad(bot) then
+                    log(bot.id .. " direct remove status=" .. tostring(bot.status))
+                    safeRemove(bot)
+                    return
+                end
+
+                pcall(function()
+                    processWorker(bot)
+                end)
+
+                safeRemove(bot)
+            end)
+
+            sleep(250)
+        end
+
+        sleep(5000)
+    end
+end)
+
+if getClient().status == 7 then
+    removeClient()
+end
+
+analisis ini
